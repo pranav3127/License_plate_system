@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 """
-License Plate Information System - Tkinter GUI
+License Plate Information System - Tkinter GUI with Captcha
 Features:
 - Admin and Client roles with login/signup
+- Captcha (case-insensitive) on login and client signup
+- Client signup password rules: at least 1 uppercase, 1 digit, 1 special char (@#$%^&+=!), length 6-20
 - Default admin 'pranav' / 'pranav'
 - 50 default Indian license records
-- Persistent storage in JSON files
-- Admin: view all records in table, add/edit/delete, add new admins, view logs
-- Client: signup/login, add vehicle, edit own vehicles, search (table result)
-- Undo last change (confirmation) available inside admin edit view and client edits (state saved prior)
-- Single main window; content frames are swapped dynamically
+- Persistent JSON storage
+- Admin: view/add/edit/delete, add admin, view logs, undo last change
+- Client: signup/login, add vehicle, view & edit own vehicles, search
+- Single main window, frames swapped dynamically
 """
 
 import json
 import os
-import getpass
-from copy import deepcopy
 import random
+import re
+import string
+from copy import deepcopy
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 
 # ---------- File constants ----------
 DATA_FILE = "license_data.json"
@@ -26,7 +28,7 @@ USERS_FILE = "users.json"
 LOG_FILE = "search_log.json"
 UNDO_FILE = "undo_stack.json"
 
-# ---------- Data helpers ----------
+# ---------- Utilities ----------
 def load_json(path):
     if not os.path.exists(path):
         with open(path, "w") as f:
@@ -62,6 +64,27 @@ def undo_last_change_confirm(parent):
     else:
         return False
 
+# ---------- Password validation ----------
+def is_valid_password(password: str) -> bool:
+    """
+    Requirements:
+    - At least one uppercase letter
+    - At least one digit
+    - At least one special character from @#$%^&+=!
+    - Length between 6 and 20 characters
+    """
+    pattern = r'^(?=.*[A-Z])(?=.*\d)(?=.*[@#$%^&+=!]).{6,20}$'
+    return re.match(pattern, password) is not None
+
+# ---------- Captcha helpers ----------
+def generate_captcha(length=5):
+    chars = string.ascii_letters + string.digits
+    return ''.join(random.choice(chars) for _ in range(length))
+
+def captcha_check(input_text, actual):
+    # case-insensitive
+    return (input_text or "").strip().lower() == (actual or "").strip().lower()
+
 # ---------- Default data setup ----------
 def setup_default_users():
     users = load_json(USERS_FILE)
@@ -70,10 +93,10 @@ def setup_default_users():
     else:
         users["admin"]["pranav"] = users["admin"].get("pranav", "pranav")
     if "clients" not in users:
-        # create some sample client accounts
+        # sample clients with passwords that satisfy rules
         clients = {}
         for i in range(1, 16):
-            clients[f"client{i}"] = "password"
+            clients[f"client{i}"] = "Password1!"
         users["clients"] = clients
     save_json(USERS_FILE, users)
 
@@ -160,8 +183,8 @@ class LicenseApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("License Plate Information System")
-        self.geometry("980x600")
-        self.resizable(True, True)
+        self.geometry("1000x620")
+        self.minsize(900, 550)
         # current logged in user and role
         self.current_user = None
         self.current_role = None  # "admin" or "client"
@@ -196,7 +219,6 @@ class LicenseApp(tk.Tk):
     def show_frame(self, name):
         frame = self.frames[name]
         frame.tkraise()
-        # update breadcrumb
         crumb = {
             "StartFrame": "Home",
             "AuthFrame": "Login / Signup",
@@ -247,30 +269,47 @@ class StartFrame(ttk.Frame):
         self.controller.show_frame("AuthFrame")
 
 class AuthFrame(ttk.Frame):
+    """
+    Handles both Admin and Client login and Client signup.
+    Includes a case-insensitive captcha for both login and signup.
+    """
     def __init__(self, parent, controller):
         super().__init__(parent, padding=10)
         self.controller = controller
         self.role = None  # "admin" or "client"
+        self.current_captcha = generate_captcha()
 
         self.header = ttk.Label(self, text="", font=("Segoe UI", 13))
         self.header.pack(pady=8)
 
-        # login frame
         frm = ttk.Frame(self)
-        frm.pack(pady=10)
+        frm.pack(pady=4)
+
         ttk.Label(frm, text="Username:").grid(row=0, column=0, sticky="e", padx=5, pady=5)
         self.username_var = tk.StringVar()
         ttk.Entry(frm, textvariable=self.username_var).grid(row=0, column=1, padx=5, pady=5)
+
         ttk.Label(frm, text="Password:").grid(row=1, column=0, sticky="e", padx=5, pady=5)
         self.password_var = tk.StringVar()
         ttk.Entry(frm, show="*", textvariable=self.password_var).grid(row=1, column=1, padx=5, pady=5)
 
+        # Captcha display & entry
+        captcha_frame = ttk.Frame(self)
+        captcha_frame.pack(pady=6)
+        self.captcha_label_var = tk.StringVar(value=self.current_captcha)
+        captcha_display = ttk.Label(captcha_frame, textvariable=self.captcha_label_var, font=("Courier", 14, "bold"))
+        captcha_display.pack(side=tk.LEFT, padx=6)
+        ttk.Button(captcha_frame, text="Regenerate", command=self.regenerate_captcha).pack(side=tk.LEFT, padx=6)
+        ttk.Label(captcha_frame, text="Enter Captcha:").pack(side=tk.LEFT, padx=6)
+        self.captcha_entry_var = tk.StringVar()
+        ttk.Entry(captcha_frame, textvariable=self.captcha_entry_var).pack(side=tk.LEFT, padx=6)
+
+        # login / signup buttons
         self.login_btn = ttk.Button(self, text="Login", command=self.attempt_login)
         self.login_btn.pack(pady=6)
 
-        # signup only for clients
         self.signup_btn = ttk.Button(self, text="Signup (Client)", command=self.signup_client)
-        self.signup_btn.pack(pady=6)
+        self.signup_btn.pack(pady=3)
 
         self.back_btn = ttk.Button(self, text="Back", command=lambda: controller.show_frame("StartFrame"))
         self.back_btn.pack(pady=6)
@@ -284,8 +323,22 @@ class AuthFrame(ttk.Frame):
             self.signup_btn["state"] = "normal"
         self.username_var.set("")
         self.password_var.set("")
+        self.captcha_entry_var.set("")
+        self.regenerate_captcha()
+
+    def regenerate_captcha(self):
+        self.current_captcha = generate_captcha()
+        self.captcha_label_var.set(self.current_captcha)
+        self.captcha_entry_var.set("")
 
     def attempt_login(self):
+        # check captcha first (case-insensitive)
+        captcha_input = self.captcha_entry_var.get()
+        if not captcha_check(captcha_input, self.current_captcha):
+            messagebox.showerror("Captcha", "Incorrect captcha. Please try again.")
+            self.regenerate_captcha()
+            return
+
         users = load_json(USERS_FILE)
         uname = self.username_var.get().strip()
         pwd = self.password_var.get().strip()
@@ -293,41 +346,83 @@ class AuthFrame(ttk.Frame):
             if uname in users.get("admin", {}) and users["admin"][uname] == pwd:
                 messagebox.showinfo("Login", "Admin login successful.")
                 self.controller.login("admin", uname)
+                # reset captcha for next time
+                self.regenerate_captcha()
             else:
                 messagebox.showerror("Login Failed", "Invalid admin credentials.")
+                self.regenerate_captcha()
         else:
             if uname in users.get("clients", {}) and users["clients"][uname] == pwd:
                 messagebox.showinfo("Login", "Client login successful.")
                 self.controller.login("client", uname)
+                self.regenerate_captcha()
             else:
                 messagebox.showerror("Login Failed", "Invalid client credentials. Or sign up first.")
+                self.regenerate_captcha()
 
     def signup_client(self):
+        """
+        Client signup flow with captcha, password confirmation and validation.
+        """
+        # check captcha
+        captcha_input = self.captcha_entry_var.get()
+        if not captcha_check(captcha_input, self.current_captcha):
+            messagebox.showerror("Captcha", "Incorrect captcha. Please try again.")
+            self.regenerate_captcha()
+            return
+
         users = load_json(USERS_FILE)
         uname = self.username_var.get().strip()
         pwd = self.password_var.get().strip()
         if not uname or not pwd:
-            messagebox.showerror("Signup", "Enter username and password to sign up.")
+            messagebox.showerror("Signup", "Enter username and password to sign up (password must meet rules).")
+            self.regenerate_captcha()
             return
         if uname in users.get("clients", {}):
             messagebox.showerror("Signup", "Username already exists. Please choose another.")
+            self.regenerate_captcha()
+            return
+        # ask for confirm password
+        confirm = simpledialog.askstring("Confirm Password", "Re-enter password:", show="*", parent=self)
+        if confirm is None:
+            # cancelled
+            self.regenerate_captcha()
+            return
+        if pwd != confirm:
+            messagebox.showerror("Signup", "Passwords do not match.")
+            self.regenerate_captcha()
+            return
+        # validate password
+        if not is_valid_password(pwd):
+            messagebox.showerror(
+                "Invalid Password",
+                "Password must contain:\n"
+                "- At least one UPPERCASE letter\n"
+                "- At least one number\n"
+                "- At least one special character (@#$%^&+=!)\n"
+                "- Length between 6 and 20 characters"
+            )
+            self.regenerate_captcha()
             return
         users.setdefault("clients", {})[uname] = pwd
         save_json(USERS_FILE, users)
         messagebox.showinfo("Signup", "Signup successful. You can now login.")
+        # reset fields and captcha
+        self.username_var.set("")
+        self.password_var.set("")
+        self.captcha_entry_var.set("")
+        self.regenerate_captcha()
 
 class AdminFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, padding=8)
         self.controller = controller
 
-        # left: controls, right: table
         left = ttk.Frame(self)
         left.pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=6)
         right = ttk.Frame(self)
         right.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=6, pady=6)
 
-        # controls
         ttk.Label(left, text="Admin Controls", font=("Segoe UI", 12, "bold")).pack(pady=4)
         ttk.Button(left, text="Refresh", command=self.refresh).pack(fill=tk.X, pady=4)
         ttk.Button(left, text="Add Record", command=self.add_record).pack(fill=tk.X, pady=4)
@@ -337,7 +432,6 @@ class AdminFrame(ttk.Frame):
         ttk.Button(left, text="Add Admin", command=self.add_admin).pack(fill=tk.X, pady=4)
         ttk.Button(left, text="Back Home", command=self.back_home).pack(fill=tk.X, pady=12)
 
-        # search box for filtering
         filterfrm = ttk.Frame(left)
         filterfrm.pack(fill=tk.X, pady=8)
         ttk.Label(filterfrm, text="Filter (plate / owner):").pack(anchor="w")
@@ -347,7 +441,6 @@ class AdminFrame(ttk.Frame):
         ent.bind("<KeyRelease>", lambda e: self.refresh())
         ttk.Button(filterfrm, text="Clear", command=lambda: (self.filter_var.set(""), self.refresh())).pack(fill=tk.X)
 
-        # treeview table
         cols = ("plate","owner_name","vehicle_type","vehicle_company","vehicle_model","owner_address","registration_date","owner_username")
         self.tree = ttk.Treeview(right, columns=cols, show="headings")
         headings = {
@@ -364,7 +457,6 @@ class AdminFrame(ttk.Frame):
             self.tree.heading(c, text=headings[c])
             self.tree.column(c, width=120, anchor="center")
         self.tree.pack(fill=tk.BOTH, expand=True)
-        # vertical scrollbar
         vsb = ttk.Scrollbar(right, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscroll=vsb.set)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
@@ -373,7 +465,6 @@ class AdminFrame(ttk.Frame):
         self.controller.logout()
 
     def refresh(self):
-        # populate treeview with all data, apply filter
         for r in self.tree.get_children():
             self.tree.delete(r)
         data = load_json(DATA_FILE)
@@ -403,7 +494,6 @@ class AdminFrame(ttk.Frame):
         return item[0]
 
     def add_record(self):
-        # show add form in same frame (simple popup variant using a modal-like child window)
         AddEditRecordWindow(self, mode="add", role="admin")
 
     def edit_selected_record(self):
@@ -432,7 +522,6 @@ class AdminFrame(ttk.Frame):
         if not logs:
             messagebox.showinfo("Logs", "No logs yet.")
             return
-        # show logs in a simple dialog
         dlg = tk.Toplevel(self)
         dlg.title("Client Search Logs")
         dlg.geometry("600x400")
@@ -472,20 +561,19 @@ class ClientFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, padding=8)
         self.controller = controller
-        # top area: search & add controls
         top = ttk.Frame(self)
         top.pack(fill=tk.X, padx=6, pady=6)
 
-        # left controls
         left = ttk.Frame(top)
         left.pack(side=tk.LEFT, fill=tk.X, expand=True)
         ttk.Label(left, text="Client Actions", font=("Segoe UI", 12, "bold")).pack(anchor="w")
         btn_add = ttk.Button(left, text="Add your vehicle", command=self.add_vehicle)
         btn_add.pack(side=tk.LEFT, padx=4)
-        btn_edit = ttk.Button(left, text="Edit your vehicles", command=self.edit_own_vehicle)
-        btn_edit.pack(side=tk.LEFT, padx=4)
+        btn_view_mine = ttk.Button(left, text="View My Vehicles", command=self.view_my_vehicles)
+        btn_view_mine.pack(side=tk.LEFT, padx=4)
+        btn_edit_selected = ttk.Button(left, text="Edit Selected Vehicle", command=self.edit_selected_vehicle)
+        btn_edit_selected.pack(side=tk.LEFT, padx=4)
 
-        # search
         right = ttk.Frame(top)
         right.pack(side=tk.RIGHT, fill=tk.X)
         ttk.Label(right, text="Search by plate:").pack(side=tk.LEFT, padx=4)
@@ -495,9 +583,8 @@ class ClientFrame(ttk.Frame):
         ent.bind("<Return>", lambda e: self.do_search())
         ttk.Button(right, text="Search", command=self.do_search).pack(side=tk.LEFT, padx=4)
 
-        # treeview for search results (single-row or multiple)
         cols = ("plate","owner_name","vehicle_type","vehicle_company","vehicle_model","owner_address","registration_date","owner_username")
-        self.tree = ttk.Treeview(self, columns=cols, show="headings", height=10)
+        self.tree = ttk.Treeview(self, columns=cols, show="headings", height=15)
         headings = {
             "plate":"License Plate",
             "owner_name":"Owner Name",
@@ -520,38 +607,50 @@ class ClientFrame(ttk.Frame):
         # clear tree
         for r in self.tree.get_children():
             self.tree.delete(r)
-        # optionally show user's vehicles or nothing
-        # We'll show nothing until a search or user chooses to view own vehicles
-        pass
 
     def add_vehicle(self):
         AddEditRecordWindow(self, mode="add", role="client", owner_username=self.controller.current_user)
 
-    def edit_own_vehicle(self):
+    def view_my_vehicles(self):
+        self.refresh()
         data = load_json(DATA_FILE)
         username = self.controller.current_user
-        owned = [p for p, info in data.items() if info.get("owner_username") == username]
+        owned = [(p, info) for p, info in sorted(data.items()) if info.get("owner_username") == username]
         if not owned:
             messagebox.showinfo("No vehicles", "You have no registered vehicles.")
             return
-        # prompt to choose a plate from those owned; use simple dialog box
-        top = tk.Toplevel(self)
-        top.title("Edit your vehicle")
-        top.geometry("320x220")
-        ttk.Label(top, text="Your vehicles:").pack(pady=6)
-        lb = tk.Listbox(top)
-        for p in owned:
-            lb.insert(tk.END, p)
-        lb.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
-        def do_edit():
-            sel = lb.curselection()
-            if not sel:
-                messagebox.showwarning("Select", "Select a vehicle to edit.")
-                return
-            plate = lb.get(sel[0])
-            top.destroy()
-            AddEditRecordWindow(self, mode="edit", role="client", plate=plate, owner_username=username)
-        ttk.Button(top, text="Edit Selected", command=do_edit).pack(pady=6)
+        for plate, info in owned:
+            row = (plate,
+                   info.get("owner_name",""),
+                   info.get("vehicle_type",""),
+                   info.get("vehicle_company",""),
+                   info.get("vehicle_model",""),
+                   info.get("owner_address",""),
+                   info.get("registration_date",""),
+                   info.get("owner_username",""))
+            self.tree.insert("", tk.END, values=row)
+
+    def edit_selected_vehicle(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning("Select", "Please select one of your vehicles in the table to edit.")
+            return
+        item = self.tree.item(sel[0])["values"]
+        if not item:
+            messagebox.showwarning("Select", "Invalid selection.")
+            return
+        plate = item[0]
+        # check ownership before allowing edit
+        data = load_json(DATA_FILE)
+        record = data.get(plate)
+        if not record:
+            messagebox.showerror("Error", "Record not found.")
+            return
+        if record.get("owner_username") != self.controller.current_user:
+            messagebox.showerror("Permission", "You can only edit your own vehicles.")
+            return
+        # open edit popup (role=client)
+        AddEditRecordWindow(self, mode="edit", role="client", plate=plate, owner_username=self.controller.current_user)
 
     def do_search(self):
         plate = self.search_var.get().strip().upper()
@@ -574,41 +673,34 @@ class ClientFrame(ttk.Frame):
             self.tree.insert("", tk.END, values=row)
         else:
             messagebox.showinfo("Search", "No record found.")
-        # log the search
         logs = load_json(LOG_FILE)
         logs.setdefault(self.controller.current_user or "anonymous", []).append(plate)
         save_json(LOG_FILE, logs)
 
-# ---------- Add/Edit Record UI (embedded style using Toplevel-like frame but as child) ----------
+# ---------- Add/Edit Record Window ----------
 class AddEditRecordWindow:
     """
-    To keep single-window layout we'll create a transient frame in the main app that looks like a dialog.
-    It will overlay part of the window and disable other controls logically by disabling frames.
+    Popup-style overlay using an in-window Frame that disables parent widgets visually.
+    For clients: allow editing of owner_name, vehicle_type, vehicle_company, vehicle_model,
+                 owner_address, registration_date (owner_username readonly)
+    For admins: can edit all fields (except plate when editing)
     """
     def __init__(self, parent_frame, mode="add", role="admin", plate=None, owner_username=None):
-        """
-        parent_frame: frame from which this is launched (AdminFrame or ClientFrame)
-        mode: "add" or "edit"
-        role: "admin" or "client"
-        plate: plate to edit (for edit mode)
-        owner_username: when client adding/editing, prefill owner_username
-        """
         self.parent_frame = parent_frame
         self.controller = parent_frame.controller
         self.mode = mode
         self.role = role
         self.plate = plate
         self.owner_username = owner_username or (self.controller.current_user if role=="client" else "N/A")
+
         # overlay frame
         self.overlay = ttk.Frame(self.controller.container, relief="raised", borderwidth=2)
-        self.overlay.place(relx=0.06, rely=0.06, relwidth=0.88, relheight=0.88)
-        # form layout
+        self.overlay.place(relx=0.08, rely=0.06, relwidth=0.84, relheight=0.88)
         head_text = ("Add New Record" if mode=="add" else f"Edit Record: {plate}")
-        ttk.Label(self.overlay, text=head_text, font=("Segoe UI", 12, "bold")).pack(pady=6)
+        ttk.Label(self.overlay, text=head_text, font=("Segoe UI", 13, "bold")).pack(pady=6)
         form = ttk.Frame(self.overlay)
         form.pack(padx=10, pady=6, fill=tk.BOTH, expand=True)
 
-        # fields
         self.vars = {
             "plate": tk.StringVar(value=self.plate if self.plate else ""),
             "owner_name": tk.StringVar(),
@@ -620,7 +712,6 @@ class AddEditRecordWindow:
             "owner_username": tk.StringVar(value=self.owner_username)
         }
 
-        # if editing, load data
         if mode == "edit" and plate:
             data = load_json(DATA_FILE)
             rec = data.get(plate)
@@ -633,7 +724,6 @@ class AddEditRecordWindow:
                 self.vars["registration_date"].set(rec.get("registration_date",""))
                 self.vars["owner_username"].set(rec.get("owner_username",""))
 
-        # grid labels + entries
         labels = [
             ("License Plate", "plate"),
             ("Owner Name", "owner_name"),
@@ -649,12 +739,11 @@ class AddEditRecordWindow:
             ent_state = "readonly" if (key=="plate" and mode=="edit") else "normal"
             e = ttk.Entry(form, textvariable=self.vars[key], state=ent_state)
             e.grid(row=i, column=1, sticky="we", padx=6, pady=4)
-            # restrict owner_username editing for client role (clients can't change owner_username)
-            if key=="owner_username" and role=="client":
+            # client should not edit owner_username
+            if key == "owner_username" and role == "client":
                 e["state"] = "readonly"
         form.columnconfigure(1, weight=1)
 
-        # bottom buttons: Save, Undo (for edit), Cancel
         btnfrm = ttk.Frame(self.overlay)
         btnfrm.pack(pady=8)
         ttk.Button(btnfrm, text="Save", command=self.save).pack(side=tk.LEFT, padx=6)
@@ -662,11 +751,9 @@ class AddEditRecordWindow:
             ttk.Button(btnfrm, text="Undo Last Change", command=self.undo_action).pack(side=tk.LEFT, padx=6)
         ttk.Button(btnfrm, text="Cancel", command=self.close).pack(side=tk.LEFT, padx=6)
 
-        # temporarily disable underlying frames (visual only)
         self.disable_parent_widgets()
 
     def disable_parent_widgets(self):
-        # dim parent frames by disabling their widgets where possible
         self.disabled = []
         for child in self.parent_frame.winfo_children():
             try:
@@ -674,7 +761,6 @@ class AddEditRecordWindow:
                 child.configure(state="disabled")
                 self.disabled.append((child, child_state))
             except Exception:
-                # ignore if not widget with state
                 pass
 
     def enable_parent_widgets(self):
@@ -687,12 +773,10 @@ class AddEditRecordWindow:
     def close(self):
         self.overlay.destroy()
         self.enable_parent_widgets()
-        # refresh parent frame displays
         try:
             self.parent_frame.refresh()
         except Exception:
             pass
-        # also refresh admin/client main frames
         try:
             self.controller.frames["AdminFrame"].refresh()
         except Exception:
@@ -705,7 +789,6 @@ class AddEditRecordWindow:
     def undo_action(self):
         undone = undo_last_change_confirm(self.overlay)
         if undone:
-            # load restored data and close edit window
             self.close()
 
     def save(self):
@@ -726,19 +809,22 @@ class AddEditRecordWindow:
                 "vehicle_model": self.vars["vehicle_model"].get().strip(),
                 "owner_address": self.vars["owner_address"].get().strip(),
                 "registration_date": self.vars["registration_date"].get().strip(),
-                "owner_username": self.vars["owner_username"].get().strip() or ("N/A" if self.role=="admin" else self.controller.current_user)
+                "owner_username": self.vars["owner_username"].get().strip() or (self.controller.current_user if self.role=="client" else "N/A")
             }
             save_json(DATA_FILE, data)
             messagebox.showinfo("Added", f"Record {plate} added.", parent=self.overlay)
             self.close()
-        else:  # edit
+        else:
             if plate not in data:
                 messagebox.showerror("Not found", "Record not found.", parent=self.overlay)
                 return
-            # For client role, restrict fields they can edit: type, company, model, address, date
             if self.role == "client":
-                push_undo_state()
                 rec = data[plate]
+                if rec.get("owner_username") != self.controller.current_user:
+                    messagebox.showerror("Permission", "You can only edit your own vehicles.", parent=self.overlay)
+                    return
+                push_undo_state()
+                rec["owner_name"] = self.vars["owner_name"].get().strip()
                 rec["vehicle_type"] = self.vars["vehicle_type"].get().strip()
                 rec["vehicle_company"] = self.vars["vehicle_company"].get().strip()
                 rec["vehicle_model"] = self.vars["vehicle_model"].get().strip()
@@ -749,7 +835,6 @@ class AddEditRecordWindow:
                 messagebox.showinfo("Updated", f"Record {plate} updated.", parent=self.overlay)
                 self.close()
             else:
-                # admin can edit any field; but we allow selective edits. Save whole record from form.
                 push_undo_state()
                 data[plate] = {
                     "owner_name": self.vars["owner_name"].get().strip(),
@@ -764,7 +849,7 @@ class AddEditRecordWindow:
                 messagebox.showinfo("Updated", f"Record {plate} updated.", parent=self.overlay)
                 self.close()
 
-# ---------- Main execution ----------
+# ---------- Main ----------
 def main():
     setup_all_defaults()
     app = LicenseApp()
